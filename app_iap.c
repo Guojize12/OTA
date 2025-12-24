@@ -5,7 +5,12 @@
 
 #define ALIGN32bit(a)      			(((a + 3) / 4) * 4)
 #define ALIGN64bit(a)               ALIGN32bit(a)  // STM32使用32位对齐
-#define WRITEBACK_TIMES         5
+#define WRITEBACK_TIMES             5
+
+#ifndef FLASH_PAGE_SIZE
+// STM32F103（中容量）Flash页大小为1KB
+#define FLASH_PAGE_SIZE             1024
+#endif
 
 extern MD5_CTX g_cont;
 
@@ -131,14 +136,16 @@ int APP_IAP_MD5_Check(void)
 
         while(1)
         {
-            if(firmware_size-processe_size < FIRMWARE_SUB_LEN) //小于SPI_FLASH_SECTOR_SIZE,则readLen为实际长度
+            uint32_t remaining = (firmware_size > processe_size) ? (firmware_size - processe_size) : 0;
+            if (remaining == 0) break;
+
+            if(remaining < FIRMWARE_SUB_LEN)
             {
-                readLen = ALIGN32bit(firmware_size-processe_size);	//4字节对齐
-//                LOG("ota last copy packet [%d]\n",readLen);
+                readLen = remaining; // 最后一包按真实长度计算
             }
             else
             {
-                readLen=FIRMWARE_SUB_LEN;
+                readLen = FIRMWARE_SUB_LEN;
             }
 
             BSP_FLASH_Read(APP_IAP_ADDR_APP_START+processe_size,(uint32_t *)readBuf,readLen);
@@ -175,6 +182,7 @@ int APP_IAP_MD5_Check(void)
     return result;
 }
 #endif
+
 int APP_IAP_Check(void)
 {
     int ret;
@@ -224,52 +232,62 @@ int APP_IAP_Check(void)
 end:
     return ret;
 }
+
 void APP_IAP_Upgrade(void)
 {
-    uint8_t readBuf[FIRMWARE_SUB_LEN];
-    uint32_t readLen=FIRMWARE_SUB_LEN;
+    uint8_t  readBuf[FIRMWARE_SUB_LEN];
+    uint32_t readLen = 0;
     uint32_t processe_size = 0;
-    uint32_t firmware_size = g_user_config.ota_config.firmware_size;//获取固件大小
+    uint32_t firmware_size = g_user_config.ota_config.firmware_size; //获取固件大小
 
-    if(firmware_size > (APP_IAP_ADDR_APP_END-APP_IAP_ADDR_APP_START))
+    // 保护：不要超过APP区域大小
+    uint32_t app_region_size = (APP_IAP_ADDR_APP_END - APP_IAP_ADDR_APP_START + 1); // 包含末地址
+    if(firmware_size > app_region_size)
     {
-        firmware_size = (APP_IAP_ADDR_APP_END-APP_IAP_ADDR_APP_START);
+        firmware_size = app_region_size;
     }
-    BSP_FLASH_Erase_Pages(APP_IAP_ADDR_APP_START, APP_IAP_ADDR_APP_START+firmware_size);//擦除app区
 
-    LOG("New Firmware size <%d>\n",firmware_size);
-    LOG("app start addr <0x%X>\n",APP_IAP_ADDR_APP_START);
+    // 擦除APP区：按页上取整，确保最后一页也被擦除
+    uint32_t erase_end_addr = APP_IAP_ADDR_APP_START + firmware_size;
+    uint32_t erase_end_page_aligned = ((erase_end_addr + FLASH_PAGE_SIZE - 1) / FLASH_PAGE_SIZE) * FLASH_PAGE_SIZE;
+    BSP_FLASH_Erase_Pages(APP_IAP_ADDR_APP_START, erase_end_page_aligned);
+
+    LOG("New Firmware size <%d>\n", firmware_size);
+    LOG("app start addr <0x%X>\n", APP_IAP_ADDR_APP_START);
 
 #ifdef USE_APP_MD5_CHK
     MD5_Init(&g_cont);
 #endif
 
-    while(1)
+    while(processe_size < firmware_size)
     {
-        readLen = FIRMWARE_SUB_LEN;
-        if(firmware_size-processe_size < FIRMWARE_SUB_LEN) //小于SPI_FLASH_SECTOR_SIZE,则readLen为实际长度
-        {
-            memset(readBuf,0,FIRMWARE_SUB_LEN);
-            readLen = ALIGN32bit(firmware_size-processe_size);	//4字节对齐
-            LOG("ota last copy packet [%d]\n",readLen);
-        }
+        // 本次实际需要写入的长度（最后一包按实际剩余长度）
+        uint32_t remaining = firmware_size - processe_size;
+        readLen = (remaining > FIRMWARE_SUB_LEN) ? FIRMWARE_SUB_LEN : remaining;
 
-        // 【安全检查】防止写入地址越界到Boot区或其他区域
+        // 写入目标地址
         uint32_t write_addr = APP_IAP_ADDR_APP_START + processe_size;
-        if(write_addr < APP_IAP_ADDR_APP_START || 
-           write_addr >= APP_IAP_ADDR_APP_END ||
-           (write_addr + readLen) > APP_IAP_ADDR_APP_END)
+
+        // 防止越界：包含末地址（write_addr + readLen - 1 <= APP_END）
+        if(write_addr < APP_IAP_ADDR_APP_START || write_addr > APP_IAP_ADDR_APP_END)
         {
-            LOGT("writeback addr check failed! addr=0x%X, len=%d\n", write_addr, readLen);
-            LOGT("APP range: 0x%X - 0x%X\n", APP_IAP_ADDR_APP_START, APP_IAP_ADDR_APP_END);
+            LOGT("writeback addr invalid! addr=0x%X\n", write_addr);
             APP_LOG_Write(OTA_ERR_WRITE_BACK);
             BSP_DELAY_MS(100);
             NVIC_SystemReset();
         }
+        if((write_addr + readLen - 1) > APP_IAP_ADDR_APP_END)
+        {
+            // 裁剪到APP区域上界（包含末地址）
+            readLen = APP_IAP_ADDR_APP_END - write_addr + 1;
+        }
 
-        BSP_FLASH_Read(APP_IAP_ADDR_BACKUP_ADDR_+processe_size,(uint32_t*)readBuf,readLen);//读取备份区固件
+        // 读取备份区固件（注意：使用正确的备份起始地址，不再 +20 偏移）
+        memset(readBuf, 0, sizeof(readBuf));
+        BSP_FLASH_Read(APP_IAP_ADDR_BACKUP_ADDR + processe_size, (uint32_t*)readBuf, readLen);
 
-        int write_result = BSP_FLASH_Write(write_addr, (uint32_t*)readBuf, readLen);//回写app区
+        // 写入APP区
+        int write_result = BSP_FLASH_Write(write_addr, (uint32_t*)readBuf, readLen);
         if(write_result != 0)
         {
             LOGT("write back err!! result=%d, addr=0x%X\n", write_result, write_addr);
@@ -278,20 +296,23 @@ void APP_IAP_Upgrade(void)
         }
 
 #ifdef USE_APP_MD5_CHK
-        MD5_Update(&g_cont,readBuf,readLen);
+        MD5_Update(&g_cont, readBuf, readLen);
 #endif
 
         processe_size += readLen;//已处理大小
-        g_progress = 100+processe_size*100/firmware_size;
-        LOG("writeback process %d%%\n",g_progress-100);
+        g_progress = 100 + (processe_size * 100 / firmware_size);
+        LOG("writeback process %d%%\n", g_progress - 100);
 #ifdef USE_IWDG
         BSP_IWDG_Refresh();//喂狗
 #endif
-        if(processe_size >= firmware_size)
+
+        if(remaining <= FIRMWARE_SUB_LEN)
         {
-            break; //升级成功
+            // 最后一包（仅日志）
+            LOG("ota last copy packet [%d]\n", readLen);
         }
     }
+
 #ifdef USE_APP_MD5_CHK
     uint8_t digest[16]= {0};
     MD5_Final(&g_cont, digest);
@@ -300,9 +321,11 @@ void APP_IAP_Upgrade(void)
     APP_IAP_Write_App_Md5(digest, 16); //记录app MD5
     LOGT("writeback MD5 saved to EEPROM\n");
 #endif
-    EEPROM_FLASH_WriteU32(APP_IAP_ADDR_STATUS_OTA,0);//复位升级标志位（改为U32与读取匹配）
-    EEPROM_FLASH_WriteU16(APP_IAP_ADDR_APP_OK,0);//复位运行志位
 
+    // 复位升级标志位（U32，与读取匹配）
+    EEPROM_FLASH_WriteU32(APP_IAP_ADDR_STATUS_OTA, 0);
+    // 复位运行志位
+    EEPROM_FLASH_WriteU16(APP_IAP_ADDR_APP_OK, 0);
 }
 
 void APP_IAP_Handle(void)
@@ -313,8 +336,6 @@ void APP_IAP_Handle(void)
     BSP_DELAY_MS(3000);
     NVIC_SystemReset();
     while(1);
-
 }
 
 /*****END OF FILE****/
-
