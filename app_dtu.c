@@ -81,6 +81,8 @@ void APP_DTU_Head_Packing(uint8_t type, uint8_t *txBuf, uint16_t not_head_len, u
 //设备通用应答
 void APP_DTU_Response_Result(uint16_t cmd, uint8_t   state, uint8_t *rxBuf, uint16_t rxLen)
 {
+	
+	  LOGT("yingdaok\n");
     uint8_t txBuf[32] = {0};
     APP_DTU_Head_Packing(DTU_CMD_TYPE_WRITE, txBuf, 1, cmd, rxBuf[20]);
     txBuf[23] = state;
@@ -1268,6 +1270,7 @@ void APP_DTU_Parse_Write(uint16_t cmd, uint8_t *rxBuf, uint16_t rxLen)
     case DTU_CMD_SERVER_DEVICE_OTA://0x8005 OTA远程升级
         APP_DTU_Response_Result(cmd, DTU_CMD_RESPONSE_SUCCESS, rxBuf, rxLen);
         LOGT("ota:remote upgrade triggered by server\n");
+		    BSP_DELAY_MS(500); // 临时加200ms
         // 使用统一的OTA设置函数（会清除错误日志和计数器）
         APP_DTU_Ota_Set(1);
         break;
