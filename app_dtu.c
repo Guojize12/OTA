@@ -1268,11 +1268,13 @@ void APP_DTU_Parse_Write(uint16_t cmd, uint8_t *rxBuf, uint16_t rxLen)
         }
         break;
     case DTU_CMD_SERVER_DEVICE_OTA://0x8005 OTA远程升级
-        APP_DTU_Response_Result(cmd, DTU_CMD_RESPONSE_SUCCESS, rxBuf, rxLen);
-        LOGT("ota:remote upgrade triggered by server\n");
-		    BSP_DELAY_MS(500); // 临时加200ms
+//			  LOGT("OTA branch entered\n");
+//        APP_DTU_Response_Result(cmd, DTU_CMD_RESPONSE_SUCCESS, rxBuf, rxLen);
+//		    LOGT("After APP_DTU_Response_Result\n");
+//        LOGT("ota:remote upgrade triggered by server\n");
+//		    BSP_DELAY_MS(500); // 临时加200ms
         // 使用统一的OTA设置函数（会清除错误日志和计数器）
-        APP_DTU_Ota_Set(1);
+//        APP_DTU_Ota_Set(1);
         break;
     default:
         APP_DTU_Response_Result(cmd, DTU_CMD_RESPONSE_PARSE_FAIL, rxBuf, rxLen);
