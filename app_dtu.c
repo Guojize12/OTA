@@ -87,8 +87,10 @@ void APP_DTU_Response_Result(uint16_t cmd, uint8_t   state, uint8_t *rxBuf, uint
     uint16_t crc16 = bsp_crc16(txBuf + 23, 1);
     txBuf[24] = (uint8_t)crc16 & 0xFF;
     txBuf[25] = (uint8_t)(crc16 >> 8);
-
+		
+		LOG_HEX(txBuf, 26);
     APP_DTU_Send(txBuf, 26);
+
 }
 
 //设备心跳
